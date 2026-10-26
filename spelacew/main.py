@@ -237,15 +237,20 @@ class EW:
     def compute_EW_model(self, x, model):
         return np.trapz((1 - model), x) * 1000   # en mÅ
 
-    # Estimación de ruido
-    def estimate_noise(self, y, model):
-        return np.std(y - model)
+    def estimate_noise_from_continuum(self, y_norm):
+        # Toma los puntos más cercanos al continuo (por ejemplo, el 20% superior de los datos)
+        # o estima la dispersión en los bordes de la ventana seleccionada
+        continuum_points = y_norm[y_norm > np.percentile(y_norm, 80)]
+        if len(continuum_points) > 2:
+            return np.std(continuum_points)
+        return 0.01  # Valor por defecto si hay pocos puntos (S/N ~ 100)
 
-    # Chi cuadrado reducido (calidad del fit)
-    def compute_reduced_chi2(self, y, model, sigma, n_params):
-        sigma = max(sigma, 1e-3)   # evita división por 0
-        dof = max(len(y) - n_params, 1)
-        return np.sum(((y - model)/sigma)**2) / dof
+    def compute_reduced_chi2(self, y, model, sigma_noise, n_params):
+        sigma_noise = max(sigma_noise, 1e-4)
+        dof = len(y) - n_params
+        if dof <= 0:
+            return np.nan
+        return np.sum(((y - model) / sigma_noise)**2) / dof
     
 
 
@@ -536,9 +541,10 @@ class EW:
                 label="Reference"
             )
 
-            diff = y_ref - y
+            # 1. Manejo seguro de NaNs para evitar bordes cortados en diff
+            diff = np.nan_to_num(y_ref - y, nan=0.0)
 
-            self.ax_diff.plot(x, diff, 'k-')
+            self.ax_diff.plot(x, diff, 'k-', lw=0.9)
 
             self.ax_diff.axhline(
                 0,
@@ -547,8 +553,10 @@ class EW:
                 linewidth=0.7
             )
 
-            self.ax_diff.set_xlabel("Wavelength [Å]")
+            # 2. ALINEACIÓN CLAVE: forzar los mismos límites X que en el panel principal
+            self.ax_diff.set_xlim(xmin, xmax)
 
+            self.ax_diff.set_xlabel("Wavelength [Å]")
             self.ax_diff.set_ylabel("Ref - Obj")
 
         else:
@@ -559,6 +567,8 @@ class EW:
                 transform=self.ax_diff.transAxes,
                 ha='center'
             )
+            # Asegurar rango X incluso cuando no hay espectro de referencia
+            self.ax_diff.set_xlim(xmin, xmax)
 
         self.ax_diff.set_ylim(-0.1, 0.1)
 
@@ -961,14 +971,22 @@ class EW:
 
 
         # calidad del ajuste
-        chi2 = self.compute_reduced_chi2(
-            y_norm,
-            model,
-            self.estimate_noise(y_norm, model),
-            len(popt)
-        )
+        #chi2 = self.compute_reduced_chi2(
+        #    y_norm,
+        #    model,
+        #    self.estimate_noise(y_norm, model),
+        #    len(popt)
+        #)
+
+        # Puntos del continuo en las esquinas de la selección para estimar ruido real
+        noise = self.estimate_noise_from_continuum(y_norm)
+        n_params = len(popt) + 2  # Parámetros gaussianos + 2 del continuo lineal
+
+        chi2 = self.compute_reduced_chi2(y_norm, model, noise, n_params)
 
         row = self.line_data.iloc[self.index]
+
+        
 
         element = row.get("element", "")
         species = row.get("species", "")
